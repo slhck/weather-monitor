@@ -14,7 +14,7 @@ The app determines your location, then fetches the temperature in this order:
 - It downloads the Geosphere Austria station list (TAWES 10-minute network), picks the nearest active stations, and reads the current air temperature (`TL`) from the closest one that is reporting.
 - If the nearest Austrian station is more than 150 km away (so you are probably outside Austria) or Geosphere is unreachable, it uses the free, key-less Open-Meteo API for the temperature at your coordinates.
 
-The temperature appears in the menu bar. Click it to see the station name and distance, when the reading was taken, the data source, your location, and to open the history chart, preferences, or a manual refresh.
+The temperature appears in the menu bar. Click it to see the history chart, the station name and distance, when the reading was taken, the data source, and your location, and to open preferences or trigger a manual refresh.
 
 ## Preferences
 
@@ -22,11 +22,12 @@ Open Preferences from the menu bar to configure:
 
 - Refresh frequency (5, 10, 15, 30, or 60 minutes).
 - Location: either automatic (your location) or a specific weather station picked from a dropdown of all Geosphere stations. Choosing a station skips location detection and reads that station directly.
-- History retention (1 to 30 days). Older samples are pruned automatically.
 
 ## History chart
 
-Every reading is appended to a cache file and shown as a temperature curve over time in the History window (Swift Charts). The cache lives at `~/Library/Application Support/WeatherMonitor/history.json` and is trimmed to the retention window you set in Preferences. Readings with the same observation timestamp are not stored twice, so the curve stays clean even if you refresh more often than the station updates.
+The menu shows a temperature curve right at the top, drawn with Swift Charts. The data is pulled live from the same APIs rather than accumulated locally: for a Geosphere station it reads the 10-minute historical series (`station/historical/tawes-v1-10min`), and for an Open-Meteo location it reads the hourly series. Buttons below the chart switch the window between 12 hours, 24 hours, 3 days, 7 days, and 14 days, and hovering (or click-dragging) across the chart shows the temperature and time at that point.
+
+Each lookup is cached in memory, so switching ranges — or returning to a station you have already viewed — is instant. Nothing is written to disk; the chart refetches a current window after each refresh.
 
 ## Requirements
 

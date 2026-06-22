@@ -20,27 +20,29 @@ There are no tests and no linter configured. `Package.swift` is a plain SwiftPM 
 
 The app has no storyboard and no main window. `App.swift` manually creates the `NSApplication`, sets `.accessory` activation policy (no Dock icon, menu-bar only), and hands off to `AppDelegate`.
 
-`AppDelegate` is the single coordinator. It owns every client and store, runs the refresh pipeline, holds the current `DisplayState`, and rebuilds the `NSMenu` on each render. The two SwiftUI screens (Preferences, History) are hosted in plain `NSWindow`s via `NSHostingController` and opened from menu items.
+`AppDelegate` is the single coordinator. It owns every client and store, runs the refresh pipeline, holds the current `DisplayState`, and rebuilds the `NSMenu` on each render. The history chart is embedded directly in the menu as a custom-view `NSMenuItem` (a SwiftUI `MenuHistoryView` wrapped in an `NSHostingView`). Preferences is the only separate screen, hosted in a plain `NSWindow` via `NSHostingController` and opened from a menu item.
 
 The refresh pipeline (`AppDelegate.refresh()`) is the core logic and has two modes:
 
 - Override mode: if the user pinned a specific station in Preferences (`stationOverrideID` non-empty), query that station directly — no location lookup.
 - Automatic mode: get a location fix, then try the nearest Geosphere station; if the closest station is farther than `maxStationDistance` (150 km, i.e. probably outside Austria) or Geosphere fails, fall back to Open-Meteo for the coordinate.
 
+Each successful branch also records a `DisplayState.historySource` — `.geosphere(stationID:…)` or `.openMeteo(latitude:longitude:)` — so the chart knows where to pull its timeseries from and follows whichever station or location is currently shown.
+
 Location resolution (`LocationProvider`) wraps CoreLocation in a single async call with a 10s timeout, and `IPLocation` provides an IP-based approximate fallback when the user denies permission or CoreLocation stalls.
 
 Data clients:
 
-- `GeosphereClient` is an `actor`. It caches the full station list for the session, and `nearestTemperature` asks the 6 closest active stations in one request (the nearest may have a momentary data gap) and returns the first one reporting air temperature (`TL`). Private `Decodable` structs at the bottom of the file mirror the API's JSON shapes.
-- `OpenMeteoClient` is a stateless `struct` returning a single current temperature.
+- `GeosphereClient` is an `actor`. It caches the full station list for the session, and `nearestTemperature` asks the 6 closest active stations in one request (the nearest may have a momentary data gap) and returns the first one reporting air temperature (`TL`). `history(stationID:start:end:)` reads the 10-minute `TL` timeseries for one station over a window from the `station/historical/tawes-v1-10min` endpoint, for the chart. Private `Decodable` structs at the bottom of the file mirror the API's JSON shapes.
+- `OpenMeteoClient` is a stateless `struct`. `temperature(...)` returns a single current temperature; `history(...)` returns an hourly timeseries over a window (via the forecast endpoint's `past_days`, trimmed to the requested range), used outside Austria / as the fallback.
 
-Settings and persistence:
+Settings and history:
 
-- `AppSettings` is an `ObservableObject` backed by `UserDefaults`; SwiftUI views bind to it directly. `AppDelegate` subscribes to its `@Published` properties with Combine (using `.dropFirst()` to skip the initial value) so changing the refresh interval reschedules the timer, changing the station triggers a refresh, and changing retention re-prunes history.
-- `HistoryStore` appends each reading to `~/Library/Application Support/WeatherMonitor/history.json`, dedupes by observation timestamp, and prunes beyond the retention window. `HistoryView` draws it with Swift Charts.
+- `AppSettings` is an `ObservableObject` backed by `UserDefaults`; SwiftUI views bind to it directly. `AppDelegate` subscribes to its `@Published` properties with Combine (using `.dropFirst()` to skip the initial value) so changing the refresh interval reschedules the timer and changing the station triggers a refresh.
+- `HistoryStore` does not persist anything. It fetches the temperature timeseries on demand for the active `HistorySource` and selected `HistoryRange`, and caches each `(source, range)` result in memory so switching ranges — or returning to a station you've already viewed — is instant. `AppDelegate.apply()` calls `invalidate()` after each refresh so the chart's most recent point stays current. `MenuHistoryView`/`TemperatureChart` (Swift Charts) render it with a labelled, range-aware time axis and a hover/drag scrubber that reads out the value at a point.
 - `StationStore` just holds the loaded station list so the Preferences picker can update when the data arrives.
 
-`Models.swift` holds the shared value types (`DisplayState`, `StationInfo`, readings, errors). `Geo.swift` has two free functions: `haversineMeters` for distances and `parseTimestamp` for the differing timestamp formats the two APIs return.
+`Models.swift` holds the shared value types (`DisplayState`, `StationInfo`, readings, errors) plus `HistorySource` and `HistoryRange`; `Sample` (one chart point) lives in `HistoryStore.swift`. `Geo.swift` has two free functions: `haversineMeters` for distances and `parseTimestamp` for the differing timestamp formats the two APIs return.
 
 ## Concurrency
 
