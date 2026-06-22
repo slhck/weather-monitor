@@ -43,7 +43,7 @@ more often than the station updates.
 
 ## Requirements
 
-- macOS 12 or later
+- macOS 13 or later
 - A Swift toolchain (Xcode or the Command Line Tools: `xcode-select --install`)
 
 ## Build and run

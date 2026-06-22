@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let openMeteo = OpenMeteoClient()
 
     private let settings = AppSettings()
-    private let history = HistoryStore()
+    private lazy var history = HistoryStore(geosphere: geosphere, openMeteo: openMeteo)
     private let stationStore = StationStore()
     private var cancellables = Set<AnyCancellable>()
 
@@ -20,7 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state = DisplayState()
 
     private var prefsWindow: NSWindow?
-    private var historyWindow: NSWindow?
 
     /// If the nearest Austrian station is farther than this, the user is most
     /// likely outside Austria, so we use the Open-Meteo fallback instead.
@@ -63,11 +62,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in Task { await self?.refresh() } }
             .store(in: &cancellables)
 
-        settings.$maxStorageDays
-            .dropFirst()
-            .sink { [weak self] days in self?.history.reprune(maxAgeDays: days) }
-            .store(in: &cancellables)
-
         scheduleTimer()
         Task { await refresh() }
     }
@@ -86,21 +80,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refreshClicked() {
         Task { await refresh() }
-    }
-
-    @objc private func openHistory() {
-        if historyWindow == nil {
-            let hosting = NSHostingController(rootView: HistoryView(history: history))
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "Temperature History"
-            window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
-            window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 600, height: 400))
-            window.center()
-            historyWindow = window
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        historyWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func openPreferences() {
@@ -139,6 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 newState.stationName = reading.stationName
                 newState.observationTime = reading.observationTime
                 newState.source = "Geosphere Austria"
+                newState.historySource = .geosphere(stationID: reading.stationID, stationName: reading.stationName)
             } else {
                 newState.error = "Station unavailable"
             }
@@ -178,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             newState.distanceMeters = reading.stationDistance
             newState.observationTime = reading.observationTime
             newState.source = "Geosphere Austria"
+            newState.historySource = .geosphere(stationID: reading.stationID, stationName: reading.stationName)
             apply(newState)
             return
         }
@@ -186,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             newState.temperature = reading.temperature
             newState.observationTime = reading.observationTime
             newState.source = "Open-Meteo"
+            newState.historySource = .openMeteo(latitude: latitude, longitude: longitude)
             apply(newState)
             return
         }
@@ -196,13 +178,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func apply(_ newState: DisplayState) {
         state = newState
-        if let temperature = newState.temperature {
-            history.record(
-                temperature: temperature,
-                at: newState.observationTime ?? Date(),
-                maxAgeDays: settings.maxStorageDays
-            )
-        }
+        // Drop cached history so the chart refetches a current window next time.
+        history.invalidate()
         render()
     }
 
@@ -231,6 +208,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
+
+        menu.addItem(chartItem())
+        menu.addItem(.separator())
 
         if let error = state.error, state.temperature == nil {
             menu.addItem(infoItem("⚠ \(error)"))
@@ -266,7 +246,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        menu.addItem(actionItem("Show History…", #selector(openHistory), key: ""))
         menu.addItem(actionItem("Preferences…", #selector(openPreferences), key: ","))
         menu.addItem(actionItem("Refresh Now", #selector(refreshClicked), key: "r"))
 
@@ -275,6 +254,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(actionItem("Quit Weather Monitor", #selector(quitClicked), key: "q"))
 
         return menu
+    }
+
+    /// A menu item whose content is the compact SwiftUI temperature chart,
+    /// pointed at whatever station or location the current reading came from.
+    private func chartItem() -> NSMenuItem {
+        let view = MenuHistoryView(store: history, source: state.historySource)
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
+        let item = NSMenuItem()
+        item.view = hosting
+        return item
     }
 
     private func infoItem(_ title: String) -> NSMenuItem {

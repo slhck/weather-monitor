@@ -1,64 +1,120 @@
 import Foundation
 import Combine
 
-/// One recorded temperature reading.
-struct Sample: Codable, Identifiable, Hashable {
+/// One temperature reading — a single point on the chart.
+struct Sample: Identifiable, Hashable {
     let date: Date
     let temperature: Double
     var id: Date { date }
 }
 
-/// Persists temperature samples to a JSON file and prunes old ones.
-/// File: ~/Library/Application Support/WeatherMonitor/history.json
+/// Fetches the temperature history for the currently shown station or location
+/// on demand and keeps each (source, range) result in memory, so switching
+/// ranges — or returning to a station you've already viewed — is instant.
+/// Nothing is stored on disk; the authoritative history lives on the APIs.
 @MainActor
 final class HistoryStore: ObservableObject {
     @Published private(set) var samples: [Sample] = []
-    private let fileURL: URL
-
-    init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let directory = base.appendingPathComponent("WeatherMonitor", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        fileURL = directory.appendingPathComponent("history.json")
-        samples = loadFromDisk()
+    @Published private(set) var isLoading = false
+    @Published var range: HistoryRange = .h24 {
+        didSet { if range != oldValue { reload() } }
     }
 
-    /// Stores a reading, ignoring duplicate observation timestamps, then prunes
-    /// anything older than the retention window.
-    func record(temperature: Double, at date: Date, maxAgeDays: Int) {
-        guard !samples.contains(where: { $0.date == date }) else { return }
-        var updated = samples
-        updated.append(Sample(date: date, temperature: temperature))
-        updated.sort { $0.date < $1.date }
-        samples = prune(updated, maxAgeDays: maxAgeDays, now: date)
-        saveToDisk()
+    private let geosphere: GeosphereClient
+    private let openMeteo: OpenMeteoClient
+
+    private var source: HistorySource?
+    private var cache: [CacheKey: [Sample]] = [:]
+
+    private struct CacheKey: Hashable {
+        let source: HistorySource
+        let range: HistoryRange
     }
 
-    /// Re-applies the retention window immediately (e.g. after the user lowers it).
-    func reprune(maxAgeDays: Int) {
-        samples = prune(samples, maxAgeDays: maxAgeDays, now: Date())
-        saveToDisk()
+    init(geosphere: GeosphereClient, openMeteo: OpenMeteoClient) {
+        self.geosphere = geosphere
+        self.openMeteo = openMeteo
     }
 
-    private func prune(_ list: [Sample], maxAgeDays: Int, now: Date) -> [Sample] {
-        let cutoff = now.addingTimeInterval(-Double(maxAgeDays) * 86_400)
-        return list.filter { $0.date >= cutoff }
-    }
-
-    private func loadFromDisk() -> [Sample] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([Sample].self, from: data)) ?? []
-    }
-
-    private func saveToDisk() {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(samples) {
-            try? data.write(to: fileURL, options: .atomic)
+    /// Point the chart at the current data source (called when the menu opens).
+    func activate(source: HistorySource?) {
+        if source == self.source {
+            // Same source: just make sure the current range is populated.
+            if samples.isEmpty && !isLoading { reload() }
+            return
         }
+        self.source = source
+        samples = [] // don't keep showing the previous station's curve
+        reload()
+    }
+
+    /// Forget all cached lookups so the next view fetches fresh data. Called
+    /// after a live refresh so the chart's most recent point stays current.
+    func invalidate() {
+        cache.removeAll()
+    }
+
+    private func reload() {
+        guard let source else {
+            samples = []
+            isLoading = false
+            return
+        }
+
+        let range = self.range
+        let key = CacheKey(source: source, range: range)
+        if let cached = cache[key] {
+            samples = cached
+            isLoading = false
+            return
+        }
+
+        isLoading = true
+        Task {
+            let result = await fetch(source: source, range: range)
+            cache[key] = result
+            // Only display it if the user hasn't switched away in the meantime.
+            if self.source == source && self.range == range {
+                samples = result
+                isLoading = false
+            }
+        }
+    }
+
+    private func fetch(source: HistorySource, range: HistoryRange) async -> [Sample] {
+        let end = Date()
+        let start = end.addingTimeInterval(-range.duration)
+        let raw: [Sample]
+        switch source {
+        case let .geosphere(stationID, _):
+            raw = (try? await geosphere.history(stationID: stationID, start: start, end: end)) ?? []
+        case let .openMeteo(latitude, longitude):
+            raw = (try? await openMeteo.history(latitude: latitude, longitude: longitude, start: start, end: end)) ?? []
+        }
+        return downsample(raw, max: 400)
+    }
+
+    /// Thins a dense series so the small menu chart stays light, always keeping
+    /// the most recent point.
+    private func downsample(_ samples: [Sample], max: Int) -> [Sample] {
+        guard samples.count > max, max > 1 else { return samples }
+        let step = Int((Double(samples.count) / Double(max)).rounded(.up))
+        var result = samples.enumerated()
+            .filter { $0.offset % step == 0 }
+            .map(\.element)
+        if let last = samples.last, result.last?.id != last.id {
+            result.append(last)
+        }
+        return result
+    }
+
+    /// One-line "N points · min … · max …" summary, or nil when empty.
+    var summary: String? {
+        let temperatures = samples.map(\.temperature)
+        guard let minimum = temperatures.min(), let maximum = temperatures.max() else { return nil }
+        return String(
+            format: "%d points · min %.1f °C · max %.1f °C",
+            samples.count, minimum, maximum
+        )
     }
 }

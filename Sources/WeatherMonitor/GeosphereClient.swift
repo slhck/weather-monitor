@@ -4,7 +4,14 @@ import Foundation
 /// Docs: https://dataset.api.hub.geosphere.at/v1/docs/
 actor GeosphereClient {
     private let base = "https://dataset.api.hub.geosphere.at/v1/station/current/tawes-v1-10min"
+    private let historicalBase = "https://dataset.api.hub.geosphere.at/v1/station/historical/tawes-v1-10min"
     private var stationsCache: [StationInfo]?
+
+    private let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 
     /// The full list of stations (cached for the session), for the picker.
     func stationList() async throws -> [StationInfo] {
@@ -33,6 +40,7 @@ actor GeosphereClient {
             if let value = values.byStation[candidate.station.id] {
                 return StationReading(
                     temperature: value,
+                    stationID: candidate.station.id,
                     stationName: candidate.station.name,
                     stationDistance: candidate.distance,
                     observationTime: values.observationTime
@@ -51,10 +59,37 @@ actor GeosphereClient {
         guard let value = values.byStation[id] else { throw WeatherError.noData }
         return StationReading(
             temperature: value,
+            stationID: id,
             stationName: name,
             stationDistance: 0,
             observationTime: values.observationTime
         )
+    }
+
+    /// Reads the 10-minute air-temperature (`TL`) timeseries for one station
+    /// over a time window, for the history chart.
+    func history(stationID: String, start: Date, end: Date) async throws -> [Sample] {
+        var components = URLComponents(string: historicalBase)!
+        components.queryItems = [
+            URLQueryItem(name: "parameters", value: "TL"),
+            URLQueryItem(name: "station_ids", value: stationID),
+            URLQueryItem(name: "start", value: isoFormatter.string(from: start)),
+            URLQueryItem(name: "end", value: isoFormatter.string(from: end))
+        ]
+
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        let response = try JSONDecoder().decode(CurrentResponse.self, from: data)
+
+        guard let parameter = response.features.first?.properties.parameters["TL"] else { return [] }
+
+        var samples: [Sample] = []
+        for (index, timestamp) in response.timestamps.enumerated() {
+            guard index < parameter.data.count,
+                  let value = parameter.data[index],
+                  let date = parseTimestamp(timestamp) else { continue }
+            samples.append(Sample(date: date, temperature: value))
+        }
+        return samples
     }
 
     // MARK: - Helpers

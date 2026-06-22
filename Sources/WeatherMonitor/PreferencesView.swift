@@ -5,7 +5,6 @@ struct PreferencesView: View {
     @ObservedObject var stationStore: StationStore
 
     private let refreshOptions = [5, 10, 15, 30, 60]
-    private let storageOptions = [1, 3, 7, 14, 30]
 
     private var sortedStations: [StationInfo] {
         stationStore.stations.filter { $0.active }.sorted { $0.name < $1.name }
@@ -29,12 +28,6 @@ struct PreferencesView: View {
                 Text("Loading stations…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            Picker("Keep history for", selection: $settings.maxStorageDays) {
-                ForEach(storageOptions, id: \.self) { days in
-                    Text(days == 1 ? "1 day" : "\(days) days").tag(days)
-                }
             }
         }
         .formStyle(.grouped)

@@ -19,12 +19,59 @@ struct OpenMeteoClient {
         )
     }
 
+    /// Reads the hourly temperature timeseries for a coordinate over a window,
+    /// for the history chart (used outside Austria / as a fallback).
+    func history(latitude: Double, longitude: Double, start: Date, end: Date) async throws -> [Sample] {
+        // Request whole past days covering the window, then trim to [start, end].
+        let pastDays = min(92, max(1, Int((end.timeIntervalSince(start) / 86_400).rounded(.up)) + 1))
+        var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
+        components.queryItems = [
+            URLQueryItem(name: "latitude", value: String(latitude)),
+            URLQueryItem(name: "longitude", value: String(longitude)),
+            URLQueryItem(name: "hourly", value: "temperature_2m"),
+            URLQueryItem(name: "past_days", value: String(pastDays)),
+            URLQueryItem(name: "forecast_days", value: "1"),
+            URLQueryItem(name: "timezone", value: "UTC")
+        ]
+
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        let response = try JSONDecoder().decode(HistoryResponse.self, from: data)
+
+        var samples: [Sample] = []
+        for (index, time) in response.hourly.time.enumerated() {
+            guard index < response.hourly.temperature_2m.count,
+                  let date = utcHourFormatter.date(from: time),
+                  date >= start, date <= end else { continue }
+            samples.append(Sample(date: date, temperature: response.hourly.temperature_2m[index]))
+        }
+        return samples
+    }
+
+    /// Open-Meteo returns naive timestamps (e.g. "2026-06-15T00:00"); with
+    /// `timezone=UTC` they are UTC, so parse them as such.
+    private let utcHourFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        return formatter
+    }()
+
     private struct Response: Decodable {
         let current: Current
 
         struct Current: Decodable {
             let temperature_2m: Double
             let time: String
+        }
+    }
+
+    private struct HistoryResponse: Decodable {
+        let hourly: Hourly
+
+        struct Hourly: Decodable {
+            let time: [String]
+            let temperature_2m: [Double]
         }
     }
 }
