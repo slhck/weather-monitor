@@ -19,8 +19,27 @@ The app determines your location, then fetches the temperature in this order:
   Open-Meteo API for the temperature at your coordinates.
 
 The temperature appears in the menu bar. Click it to see the station name and
-distance, when the reading was taken, the data source, your location, and a
-manual refresh. It refreshes automatically every 10 minutes.
+distance, when the reading was taken, the data source, your location, and to
+open the history chart, preferences, or a manual refresh.
+
+## Preferences
+
+Open Preferences from the menu bar to configure:
+
+- Refresh frequency (5, 10, 15, 30, or 60 minutes).
+- Location: either automatic (your location) or a specific weather station
+  picked from a dropdown of all Geosphere stations. Choosing a station skips
+  location detection and reads that station directly.
+- History retention (1 to 30 days). Older samples are pruned automatically.
+
+## History chart
+
+Every reading is appended to a cache file and shown as a temperature curve over
+time in the History window (Swift Charts). The cache lives at
+`~/Library/Application Support/WeatherMonitor/history.json` and is trimmed to the
+retention window you set in Preferences. Readings with the same observation
+timestamp are not stored twice, so the curve stays clean even if you refresh
+more often than the station updates.
 
 ## Requirements
 

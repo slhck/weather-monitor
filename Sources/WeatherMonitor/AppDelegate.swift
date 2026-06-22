@@ -1,4 +1,6 @@
 import AppKit
+import SwiftUI
+import Combine
 import CoreLocation
 
 @MainActor
@@ -7,9 +9,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let location = LocationProvider()
     private let geosphere = GeosphereClient()
     private let openMeteo = OpenMeteoClient()
+
+    private let settings = AppSettings()
+    private let history = HistoryStore()
+    private let stationStore = StationStore()
+    private var cancellables = Set<AnyCancellable>()
+
     private var refreshTimer: Timer?
     private var isRefreshing = false
     private var state = DisplayState()
+
+    private var prefsWindow: NSWindow?
+    private var historyWindow: NSWindow?
 
     /// If the nearest Austrian station is farther than this, the user is most
     /// likely outside Austria, so we use the Open-Meteo fallback instead.
@@ -34,18 +45,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         render()
 
-        // Geosphere updates every 10 minutes, so refreshing on that cadence is plenty.
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
+        // Load the station list in the background for the preferences picker.
+        Task {
+            if let stations = try? await geosphere.stationList() {
+                stationStore.stations = stations
+            }
         }
 
+        // React to settings changes (dropFirst skips the value emitted on subscribe).
+        settings.$refreshMinutes
+            .dropFirst()
+            .sink { [weak self] _ in self?.scheduleTimer() }
+            .store(in: &cancellables)
+
+        settings.$stationOverrideID
+            .dropFirst()
+            .sink { [weak self] _ in Task { await self?.refresh() } }
+            .store(in: &cancellables)
+
+        settings.$maxStorageDays
+            .dropFirst()
+            .sink { [weak self] days in self?.history.reprune(maxAgeDays: days) }
+            .store(in: &cancellables)
+
+        scheduleTimer()
         Task { await refresh() }
+    }
+
+    // MARK: Timer
+
+    private func scheduleTimer() {
+        refreshTimer?.invalidate()
+        let interval = TimeInterval(max(1, settings.refreshMinutes) * 60)
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.refresh() }
+        }
     }
 
     // MARK: Actions
 
     @objc private func refreshClicked() {
         Task { await refresh() }
+    }
+
+    @objc private func openHistory() {
+        if historyWindow == nil {
+            let hosting = NSHostingController(rootView: HistoryView(history: history))
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "Temperature History"
+            window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 600, height: 400))
+            window.center()
+            historyWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        historyWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func openPreferences() {
+        if prefsWindow == nil {
+            let view = PreferencesView(settings: settings, stationStore: stationStore)
+            let hosting = NSHostingController(rootView: view)
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "Preferences"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            prefsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        prefsWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func quitClicked() {
@@ -59,7 +129,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isRefreshing = true
         defer { isRefreshing = false }
 
-        // 1) Where are we? Prefer CoreLocation, fall back to IP geolocation.
+        // Manual override: query the chosen station directly, no location needed.
+        let overrideID = settings.stationOverrideID
+        if !overrideID.isEmpty {
+            var newState = DisplayState()
+            newState.locationSource = "Chosen station"
+            if let reading = try? await geosphere.temperature(forStationID: overrideID) {
+                newState.temperature = reading.temperature
+                newState.stationName = reading.stationName
+                newState.observationTime = reading.observationTime
+                newState.source = "Geosphere Austria"
+            } else {
+                newState.error = "Station unavailable"
+            }
+            apply(newState)
+            return
+        }
+
+        // Automatic mode: location -> nearest Geosphere station -> Open-Meteo.
         var latitude = 0.0
         var longitude = 0.0
         var locationSource = ""
@@ -74,8 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 longitude = approx.longitude
                 locationSource = "Approx. (IP)"
             } else {
-                state = DisplayState(error: "Location unavailable")
-                render()
+                apply(DisplayState(error: "Location unavailable"))
                 return
             }
         }
@@ -85,7 +171,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newState.longitude = longitude
         newState.locationSource = locationSource
 
-        // 2) Nearest Geosphere Austria station.
         if let reading = try? await geosphere.nearestTemperature(latitude: latitude, longitude: longitude),
            reading.stationDistance <= maxStationDistance {
             newState.temperature = reading.temperature
@@ -93,23 +178,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             newState.distanceMeters = reading.stationDistance
             newState.observationTime = reading.observationTime
             newState.source = "Geosphere Austria"
-            state = newState
-            render()
+            apply(newState)
             return
         }
 
-        // 3) Fallback: Open-Meteo forecast point.
         if let reading = try? await openMeteo.temperature(latitude: latitude, longitude: longitude) {
             newState.temperature = reading.temperature
             newState.observationTime = reading.observationTime
             newState.source = "Open-Meteo"
-            state = newState
-            render()
+            apply(newState)
             return
         }
 
         newState.error = "Weather unavailable"
+        apply(newState)
+    }
+
+    private func apply(_ newState: DisplayState) {
         state = newState
+        if let temperature = newState.temperature {
+            history.record(
+                temperature: temperature,
+                at: newState.observationTime ?? Date(),
+                maxAgeDays: settings.maxStorageDays
+            )
+        }
         render()
     }
 
@@ -167,19 +260,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let latitude = state.latitude, let longitude = state.longitude {
             let suffix = state.locationSource.map { " (\($0))" } ?? ""
             menu.addItem(infoItem(String(format: "Location: %.3f, %.3f%@", latitude, longitude, suffix)))
+        } else if let locationSource = state.locationSource {
+            menu.addItem(infoItem(locationSource))
         }
 
         menu.addItem(.separator())
 
-        let refresh = NSMenuItem(title: "Refresh Now", action: #selector(refreshClicked), keyEquivalent: "r")
-        refresh.target = self
-        menu.addItem(refresh)
+        menu.addItem(actionItem("Show History…", #selector(openHistory), key: ""))
+        menu.addItem(actionItem("Preferences…", #selector(openPreferences), key: ","))
+        menu.addItem(actionItem("Refresh Now", #selector(refreshClicked), key: "r"))
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "Quit Weather Monitor", action: #selector(quitClicked), keyEquivalent: "q")
-        quit.target = self
-        menu.addItem(quit)
+        menu.addItem(actionItem("Quit Weather Monitor", #selector(quitClicked), key: "q"))
 
         return menu
     }
@@ -187,6 +280,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func infoItem(_ title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
+        return item
+    }
+
+    private func actionItem(_ title: String, _ action: Selector, key: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.target = self
         return item
     }
 }

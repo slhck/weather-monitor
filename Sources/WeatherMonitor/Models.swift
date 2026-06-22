@@ -2,15 +2,25 @@ import Foundation
 
 /// Everything the menu bar UI needs to render itself after a refresh.
 struct DisplayState {
-    var temperature: Double?
-    var stationName: String?
-    var distanceMeters: Double?
-    var observationTime: Date?
-    var source: String?
-    var locationSource: String?
-    var latitude: Double?
-    var longitude: Double?
-    var error: String?
+    var temperature: Double? = nil
+    var stationName: String? = nil
+    var distanceMeters: Double? = nil
+    var observationTime: Date? = nil
+    var source: String? = nil
+    var locationSource: String? = nil
+    var latitude: Double? = nil
+    var longitude: Double? = nil
+    var error: String? = nil
+}
+
+/// A weather station from the Geosphere metadata, used for the picker and lookups.
+struct StationInfo: Identifiable, Sendable, Hashable {
+    let id: String
+    let name: String
+    let state: String
+    let latitude: Double
+    let longitude: Double
+    let active: Bool
 }
 
 /// A temperature reading tied to a named weather station.
