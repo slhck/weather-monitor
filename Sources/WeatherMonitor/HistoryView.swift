@@ -16,20 +16,14 @@ struct TemperatureChart: View {
                     x: .value("Time", sample.date),
                     y: .value("°C", sample.temperature)
                 )
-                .foregroundStyle(
-                    .linearGradient(
-                        colors: [.orange.opacity(0.35), .orange.opacity(0.02)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
+                .foregroundStyle(areaGradient)
                 .interpolationMethod(.catmullRom)
 
                 LineMark(
                     x: .value("Time", sample.date),
                     y: .value("°C", sample.temperature)
                 )
-                .foregroundStyle(.orange)
+                .foregroundStyle(lineGradient)
                 .interpolationMethod(.catmullRom)
             }
 
@@ -42,10 +36,14 @@ struct TemperatureChart: View {
                     x: .value("Time", selected.date),
                     y: .value("°C", selected.temperature)
                 )
-                .foregroundStyle(.orange)
+                .foregroundStyle(TemperatureColor.color(for: selected.temperature))
                 .symbolSize(50)
             }
         }
+        .chartYScale(domain: domain)
+        // Catmull-Rom can overshoot the data at sharp peaks/valleys; clip so the
+        // smoothed curve and its fill never spill past the plot onto the buttons.
+        .chartPlotStyle { $0.clipped() }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                 AxisGridLine()
@@ -90,6 +88,7 @@ struct TemperatureChart: View {
         VStack(spacing: 1) {
             Text(String(format: "%.1f °C", sample.temperature))
                 .font(.caption2.bold())
+                .foregroundStyle(TemperatureColor.color(for: sample.temperature))
             Text(sample.date, format: pointFormat)
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
@@ -116,6 +115,29 @@ struct TemperatureChart: View {
         return min(max(x, margin), max(margin, width - margin))
     }
 
+    /// The visible temperature range, padded slightly so the line doesn't touch
+    /// the top and bottom edges. Pinning the y-scale to this lets the colour
+    /// gradient map a vertical position back to its actual temperature.
+    private var domain: ClosedRange<Double> {
+        let temps = samples.map(\.temperature)
+        guard let lo = temps.min(), let hi = temps.max() else { return -20...40 }
+        guard hi > lo else { return (lo - 1)...(hi + 1) }
+        let pad = Swift.max((hi - lo) * 0.12, 0.5)
+        return (lo - pad)...(hi + pad)
+    }
+
+    /// Colours the line by its value: each point is drawn in the colour that
+    /// matches its temperature, since the gradient runs top-to-bottom over the
+    /// same range the y-axis uses.
+    private var lineGradient: LinearGradient {
+        TemperatureColor.gradient(min: domain.lowerBound, max: domain.upperBound)
+    }
+
+    /// The same colour scale as the line, faded back for the fill underneath.
+    private var areaGradient: LinearGradient {
+        TemperatureColor.gradient(min: domain.lowerBound, max: domain.upperBound, opacity: 0.25)
+    }
+
     /// Axis tick labels: clock time for intraday ranges, dates for longer ones.
     private var axisFormat: Date.FormatStyle {
         switch range {
@@ -131,6 +153,57 @@ struct TemperatureChart: View {
         case .h12, .h24: return .dateTime.hour().minute()
         default: return .dateTime.month(.abbreviated).day().hour().minute()
         }
+    }
+}
+
+/// Maps a temperature (°C) to a colour on a cold-to-warm scale: blue below
+/// freezing, shifting to green around 20°C, then orange and red, and on to
+/// violet toward 40°C. Used to colour the history chart by its value.
+enum TemperatureColor {
+    private struct Stop { let t, r, g, b: Double }
+
+    /// Anchor colours, ascending by temperature. RGB is interpolated linearly
+    /// between neighbours — the same blending SwiftUI applies to gradient stops.
+    private static let stops: [Stop] = [
+        Stop(t: -20, r: 0.20, g: 0.45, b: 0.95), // blue
+        Stop(t:   0, r: 0.10, g: 0.70, b: 0.90), // cyan
+        Stop(t:  20, r: 0.30, g: 0.78, b: 0.38), // green
+        Stop(t:  25, r: 0.96, g: 0.62, b: 0.15), // orange
+        Stop(t:  30, r: 0.90, g: 0.25, b: 0.20), // red
+        Stop(t:  40, r: 0.62, g: 0.20, b: 0.82), // violet
+    ]
+
+    private static func rgb(for t: Double) -> (r: Double, g: Double, b: Double) {
+        let first = stops.first!, last = stops.last!
+        if t <= first.t { return (first.r, first.g, first.b) }
+        if t >= last.t { return (last.r, last.g, last.b) }
+        for i in 1..<stops.count where t <= stops[i].t {
+            let lo = stops[i - 1], hi = stops[i]
+            let f = (t - lo.t) / (hi.t - lo.t)
+            return (lo.r + (hi.r - lo.r) * f,
+                    lo.g + (hi.g - lo.g) * f,
+                    lo.b + (hi.b - lo.b) * f)
+        }
+        return (last.r, last.g, last.b)
+    }
+
+    /// The colour for a single temperature.
+    static func color(for t: Double) -> Color {
+        let c = rgb(for: t)
+        return Color(red: c.r, green: c.g, blue: c.b)
+    }
+
+    /// A top-to-bottom gradient spanning `min...max`, so that a point's vertical
+    /// position in a chart with a matching y-scale lands on its own colour.
+    static func gradient(min: Double, max: Double, opacity: Double = 1) -> LinearGradient {
+        let span = Swift.max(max - min, 0.0001)
+        // Top of the plot is the warmest value, so emit temperatures descending.
+        let temps = ([max, min] + stops.map(\.t).filter { $0 > min && $0 < max })
+            .sorted(by: >)
+        let out = temps.map { t in
+            Gradient.Stop(color: color(for: t).opacity(opacity), location: (max - t) / span)
+        }
+        return LinearGradient(stops: out, startPoint: .top, endPoint: .bottom)
     }
 }
 
