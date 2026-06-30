@@ -25,6 +25,7 @@ final class HistoryStore: ObservableObject {
 
     private var source: HistorySource?
     private var cache: [CacheKey: [Sample]] = [:]
+    private var loadingKey: CacheKey?
 
     private struct CacheKey: Hashable {
         let source: HistorySource
@@ -36,15 +37,26 @@ final class HistoryStore: ObservableObject {
         self.openMeteo = openMeteo
     }
 
-    /// Point the chart at the current data source (called when the menu opens).
+    /// Point the chart at the current data source, reusing cached data when it's
+    /// available (called when the chart view appears).
     func activate(source: HistorySource?) {
-        if source == self.source {
-            // Same source: just make sure the current range is populated.
-            if samples.isEmpty && !isLoading { reload() }
-            return
+        if source != self.source {
+            self.source = source
+            samples = [] // don't keep showing the previous station's curve
         }
-        self.source = source
-        samples = [] // don't keep showing the previous station's curve
+        reload()
+    }
+
+    /// Point the chart at `source` and pull a fresh window ending now, ignoring
+    /// any cached copy. Called when the menu opens so the chart is never stale.
+    func forceReload(source: HistorySource?) {
+        if source != self.source {
+            self.source = source
+            samples = []
+        }
+        if let source {
+            cache[CacheKey(source: source, range: range)] = nil
+        }
         reload()
     }
 
@@ -58,6 +70,7 @@ final class HistoryStore: ObservableObject {
         guard let source else {
             samples = []
             isLoading = false
+            loadingKey = nil
             return
         }
 
@@ -68,11 +81,16 @@ final class HistoryStore: ObservableObject {
             isLoading = false
             return
         }
+        // A fetch for this exact view is already running; let it finish rather
+        // than firing a second identical request.
+        if loadingKey == key { return }
 
+        loadingKey = key
         isLoading = true
         Task {
             let result = await fetch(source: source, range: range)
             cache[key] = result
+            loadingKey = nil
             // Only display it if the user hasn't switched away in the meantime.
             if self.source == source && self.range == range {
                 samples = result

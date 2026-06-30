@@ -88,7 +88,7 @@ struct TemperatureChart: View {
         VStack(spacing: 1) {
             Text(String(format: "%.1f °C", sample.temperature))
                 .font(.caption2.bold())
-                .foregroundStyle(TemperatureColor.color(for: sample.temperature))
+                .foregroundStyle(.white)
             Text(sample.date, format: pointFormat)
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)

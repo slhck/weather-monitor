@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var refreshTimer: Timer?
     private var isRefreshing = false
+    private var menuIsOpen = false
     private var state = DisplayState()
 
     private var prefsWindow: NSWindow?
@@ -192,7 +193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem.button?.title = "—"
         }
         statusItem.button?.toolTip = toolTipText()
-        statusItem.menu = buildMenu()
+        // Don't swap the menu out from under an open one — the displayed menu's
+        // chart updates live from the store, and we rebuild on close instead.
+        if !menuIsOpen {
+            statusItem.menu = buildMenu()
+        }
     }
 
     private func toolTipText() -> String {
@@ -208,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
+        menu.delegate = self
 
         menu.addItem(chartItem())
         menu.addItem(.separator())
@@ -277,5 +283,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.target = self
         return item
+    }
+}
+
+// MARK: - Menu lifecycle
+
+extension AppDelegate: NSMenuDelegate {
+    /// Opening the menu pulls fresh data: a current window for the chart (which
+    /// updates live in place) and a new temperature reading. Without this the
+    /// menu would keep showing whatever was last fetched on the timer.
+    func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
+        history.forceReload(source: state.historySource)
+        Task { await refresh() }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        // Rebuild so the text rows reflect anything that refreshed while open.
+        render()
     }
 }
