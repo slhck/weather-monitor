@@ -33,8 +33,8 @@ Location resolution (`LocationProvider`) wraps CoreLocation in a single async ca
 
 Data clients:
 
-- `GeosphereClient` is an `actor`. It caches the full station list for the session, and `nearestTemperature` asks the 6 closest active stations in one request (the nearest may have a momentary data gap) and returns the first one reporting air temperature (`TL`). `history(stationID:start:end:)` reads the 10-minute `TL` timeseries for one station over a window from the `station/historical/tawes-v1-10min` endpoint, for the chart. Private `Decodable` structs at the bottom of the file mirror the API's JSON shapes.
-- `OpenMeteoClient` is a stateless `struct`. `temperature(...)` returns a single current temperature; `history(...)` returns an hourly timeseries over a window (via the forecast endpoint's `past_days`, trimmed to the requested range), used outside Austria / as the fallback.
+- `GeosphereClient` is an `actor`. It caches the full station list for the session, and `nearestTemperature` asks the 6 closest active stations in one request (the nearest may have a momentary data gap) and returns the first one reporting air temperature (`TL`), together with relative humidity (`RF`), wind speed (`FF`, m/s) and dew point (`TP`) when the station reports them. `history(stationID:start:end:)` reads the 10-minute `TL` timeseries for one station over a window from the `station/historical/tawes-v1-10min` endpoint, for the chart. Private `Decodable` structs at the bottom of the file mirror the API's JSON shapes.
+- `OpenMeteoClient` is a stateless `struct`. `temperature(...)` returns the current temperature plus humidity, wind (requested in m/s to match Geosphere) and dew point; `history(...)` returns an hourly timeseries over a window (via the forecast endpoint's `past_days`, trimmed to the requested range), used outside Austria / as the fallback.
 
 Settings and history:
 
@@ -42,7 +42,7 @@ Settings and history:
 - `HistoryStore` does not persist anything. It fetches the temperature timeseries on demand for the active `HistorySource` and selected `HistoryRange`, and caches each `(source, range)` result in memory so switching ranges — or returning to a station you've already viewed — is instant. `AppDelegate.apply()` calls `invalidate()` after each refresh so the chart's most recent point stays current. `MenuHistoryView`/`TemperatureChart` (Swift Charts) render it with a labelled, range-aware time axis and a hover/drag scrubber that reads out the value at a point.
 - `StationStore` just holds the loaded station list so the Preferences picker can update when the data arrives.
 
-`Models.swift` holds the shared value types (`DisplayState`, `StationInfo`, readings, errors) plus `HistorySource` and `HistoryRange`; `Sample` (one chart point) lives in `HistoryStore.swift`. `Geo.swift` has two free functions: `haversineMeters` for distances and `parseTimestamp` for the differing timestamp formats the two APIs return.
+`Models.swift` holds the shared value types (`DisplayState`, `StationInfo`, readings, errors) plus `HistorySource` and `HistoryRange`; `DisplayState.apparentTemperature` derives the "feels like" misery index on demand. `Sample` (one chart point) lives in `HistoryStore.swift`. `Geo.swift` has two free functions: `haversineMeters` for distances and `parseTimestamp` for the differing timestamp formats the two APIs return. `Comfort.swift` computes the Steadman apparent temperature from temperature, humidity and wind, plus a short comfort label for it.
 
 ## Concurrency
 

@@ -19,7 +19,8 @@ actor GeosphereClient {
     }
 
     /// Finds the nearest stations and returns the closest one that is currently
-    /// reporting an air temperature (`TL`).
+    /// reporting an air temperature (`TL`), along with humidity, wind and dew
+    /// point where the station reports them.
     func nearestTemperature(latitude: Double, longitude: Double) async throws -> StationReading {
         let stations = try await loadStations()
 
@@ -34,16 +35,19 @@ actor GeosphereClient {
         // Ask for all candidate stations in one request; the nearest one might
         // briefly have a gap in its data, so we keep a few in reserve.
         let ids = candidates.map { $0.station.id }.joined(separator: ",")
-        let values = try await temperatures(forStationIDs: ids)
+        let observations = try await observations(forStationIDs: ids)
 
         for candidate in candidates {
-            if let value = values.byStation[candidate.station.id] {
+            if let values = observations.byStation[candidate.station.id] {
                 return StationReading(
-                    temperature: value,
+                    temperature: values.temperature,
+                    humidity: values.humidity,
+                    windSpeed: values.windSpeed,
+                    dewPoint: values.dewPoint,
                     stationID: candidate.station.id,
                     stationName: candidate.station.name,
                     stationDistance: candidate.distance,
-                    observationTime: values.observationTime
+                    observationTime: observations.observationTime
                 )
             }
         }
@@ -51,18 +55,21 @@ actor GeosphereClient {
         throw WeatherError.noData
     }
 
-    /// Reads the current air temperature for one specific station (override mode).
+    /// Reads the current conditions for one specific station (override mode).
     func temperature(forStationID id: String) async throws -> StationReading {
         let stations = try await loadStations()
         let name = stations.first(where: { $0.id == id })?.name ?? id
-        let values = try await temperatures(forStationIDs: id)
-        guard let value = values.byStation[id] else { throw WeatherError.noData }
+        let observations = try await observations(forStationIDs: id)
+        guard let values = observations.byStation[id] else { throw WeatherError.noData }
         return StationReading(
-            temperature: value,
+            temperature: values.temperature,
+            humidity: values.humidity,
+            windSpeed: values.windSpeed,
+            dewPoint: values.dewPoint,
             stationID: id,
             stationName: name,
             stationDistance: 0,
-            observationTime: values.observationTime
+            observationTime: observations.observationTime
         )
     }
 
@@ -94,22 +101,43 @@ actor GeosphereClient {
 
     // MARK: - Helpers
 
-    private func temperatures(forStationIDs ids: String) async throws -> (byStation: [String: Double], observationTime: Date?) {
+    /// Current conditions for one station: air temperature is required, the rest
+    /// are present only when the station reports them.
+    private struct StationValues {
+        let temperature: Double
+        let humidity: Double?
+        let windSpeed: Double?
+        let dewPoint: Double?
+    }
+
+    /// Fetches air temperature (`TL`), relative humidity (`RF`), wind speed
+    /// (`FF`, m/s) and dew point (`TP`) for the given stations in one request.
+    /// A station is included only if it reports a temperature.
+    private func observations(forStationIDs ids: String) async throws -> (byStation: [String: StationValues], observationTime: Date?) {
         var components = URLComponents(string: base)!
         components.queryItems = [
-            URLQueryItem(name: "parameters", value: "TL"),
+            URLQueryItem(name: "parameters", value: "TL,RF,FF,TP"),
             URLQueryItem(name: "station_ids", value: ids)
         ]
 
         let (data, _) = try await URLSession.shared.data(from: components.url!)
         let response = try JSONDecoder().decode(CurrentResponse.self, from: data)
 
-        var byStation: [String: Double] = [:]
+        // The latest non-nil value in a parameter's series (stations occasionally
+        // have a gap in the most recent 10-minute slot).
+        func latest(_ parameters: [String: CurrentResponse.Parameter], _ key: String) -> Double? {
+            parameters[key]?.data.compactMap { $0 }.last
+        }
+
+        var byStation: [String: StationValues] = [:]
         for feature in response.features {
-            if let parameter = feature.properties.parameters["TL"],
-               let latest = parameter.data.compactMap({ $0 }).last {
-                byStation[feature.properties.station] = latest
-            }
+            guard let temperature = latest(feature.properties.parameters, "TL") else { continue }
+            byStation[feature.properties.station] = StationValues(
+                temperature: temperature,
+                humidity: latest(feature.properties.parameters, "RF"),
+                windSpeed: latest(feature.properties.parameters, "FF"),
+                dewPoint: latest(feature.properties.parameters, "TP")
+            )
         }
         return (byStation, response.timestamps.last.flatMap(parseTimestamp))
     }

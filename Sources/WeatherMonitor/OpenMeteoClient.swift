@@ -8,13 +8,18 @@ struct OpenMeteoClient {
         components.queryItems = [
             URLQueryItem(name: "latitude", value: String(latitude)),
             URLQueryItem(name: "longitude", value: String(longitude)),
-            URLQueryItem(name: "current", value: "temperature_2m")
+            URLQueryItem(name: "current", value: "temperature_2m,relative_humidity_2m,dew_point_2m,wind_speed_10m"),
+            // Match Geosphere's units so the apparent-temperature math is consistent.
+            URLQueryItem(name: "wind_speed_unit", value: "ms")
         ]
 
         let (data, _) = try await URLSession.shared.data(from: components.url!)
         let response = try JSONDecoder().decode(Response.self, from: data)
         return PointReading(
             temperature: response.current.temperature_2m,
+            humidity: response.current.relative_humidity_2m,
+            windSpeed: response.current.wind_speed_10m,
+            dewPoint: response.current.dew_point_2m,
             observationTime: parseTimestamp(response.current.time)
         )
     }
@@ -62,6 +67,9 @@ struct OpenMeteoClient {
 
         struct Current: Decodable {
             let temperature_2m: Double
+            let relative_humidity_2m: Double?
+            let dew_point_2m: Double?
+            let wind_speed_10m: Double?
             let time: String
         }
     }

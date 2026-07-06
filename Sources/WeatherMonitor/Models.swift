@@ -3,6 +3,9 @@ import Foundation
 /// Everything the menu bar UI needs to render itself after a refresh.
 struct DisplayState {
     var temperature: Double? = nil
+    var humidity: Double? = nil // relative humidity, %
+    var windSpeed: Double? = nil // m/s
+    var dewPoint: Double? = nil // °C
     var stationName: String? = nil
     var distanceMeters: Double? = nil
     var observationTime: Date? = nil
@@ -13,6 +16,15 @@ struct DisplayState {
     var error: String? = nil
     /// How the history chart should fetch its timeseries for this reading.
     var historySource: HistorySource? = nil
+
+    /// The "feels like" apparent temperature (the misery index), derived from
+    /// temperature, humidity and wind when those are available.
+    var apparentTemperature: Double? {
+        guard let temperature else { return nil }
+        return WeatherMonitor.apparentTemperature(
+            temperature: temperature, humidity: humidity, windSpeed: windSpeed
+        )
+    }
 }
 
 /// Identifies where the history chart pulls its timeseries from, so it can
@@ -60,18 +72,24 @@ struct StationInfo: Identifiable, Sendable, Hashable {
     let active: Bool
 }
 
-/// A temperature reading tied to a named weather station.
+/// A current-conditions reading tied to a named weather station.
 struct StationReading: Sendable {
     let temperature: Double
+    let humidity: Double? // relative humidity, %
+    let windSpeed: Double? // m/s
+    let dewPoint: Double? // °C
     let stationID: String
     let stationName: String
     let stationDistance: Double // meters from the user
     let observationTime: Date?
 }
 
-/// A temperature reading for a coordinate (no station, e.g. a forecast point).
+/// A current-conditions reading for a coordinate (no station, e.g. a forecast point).
 struct PointReading: Sendable {
     let temperature: Double
+    let humidity: Double? // relative humidity, %
+    let windSpeed: Double? // m/s
+    let dewPoint: Double? // °C
     let observationTime: Date?
 }
 

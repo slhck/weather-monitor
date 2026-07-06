@@ -116,6 +116,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             newState.locationSource = "Chosen station"
             if let reading = try? await geosphere.temperature(forStationID: overrideID) {
                 newState.temperature = reading.temperature
+                newState.humidity = reading.humidity
+                newState.windSpeed = reading.windSpeed
+                newState.dewPoint = reading.dewPoint
                 newState.stationName = reading.stationName
                 newState.observationTime = reading.observationTime
                 newState.source = "Geosphere Austria"
@@ -155,6 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let reading = try? await geosphere.nearestTemperature(latitude: latitude, longitude: longitude),
            reading.stationDistance <= maxStationDistance {
             newState.temperature = reading.temperature
+            newState.humidity = reading.humidity
+            newState.windSpeed = reading.windSpeed
+            newState.dewPoint = reading.dewPoint
             newState.stationName = reading.stationName
             newState.distanceMeters = reading.stationDistance
             newState.observationTime = reading.observationTime
@@ -166,6 +172,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let reading = try? await openMeteo.temperature(latitude: latitude, longitude: longitude) {
             newState.temperature = reading.temperature
+            newState.humidity = reading.humidity
+            newState.windSpeed = reading.windSpeed
+            newState.dewPoint = reading.dewPoint
             newState.observationTime = reading.observationTime
             newState.source = "Open-Meteo"
             newState.historySource = .openMeteo(latitude: latitude, longitude: longitude)
@@ -203,12 +212,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func toolTipText() -> String {
         if let temperature = state.temperature {
             var text = String(format: "%.1f °C", temperature)
+            if let apparent = state.apparentTemperature {
+                text += String(format: " · feels like %.1f °C", apparent)
+            }
             if let name = state.stationName {
                 text += " — \(name.capitalized)"
             }
             return text
         }
         return state.error ?? "Weather Monitor"
+    }
+
+    /// A combined "Humidity … · Dew point …" line, or just whichever part is
+    /// available, or nil when neither is reported.
+    private func humidityDewPointLine() -> String? {
+        var parts: [String] = []
+        if let humidity = state.humidity {
+            parts.append(String(format: "Humidity %.0f%%", humidity))
+        }
+        if let dewPoint = state.dewPoint {
+            parts.append(String(format: "Dew point %.1f °C", dewPoint))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func buildMenu() -> NSMenu {
@@ -224,6 +249,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let temperature = state.temperature {
             menu.addItem(infoItem(String(format: "%.1f °C", temperature)))
+
+            if let apparent = state.apparentTemperature {
+                menu.addItem(infoItem(String(format: "Feels like %.1f °C · %@", apparent, comfortLabel(apparent: apparent))))
+            }
+
+            if let humidityDewPoint = humidityDewPointLine() {
+                menu.addItem(infoItem(humidityDewPoint))
+            }
+            if let wind = state.windSpeed {
+                menu.addItem(infoItem(String(format: "Wind %.1f m/s", wind)))
+            }
 
             if let name = state.stationName {
                 var line = name.capitalized
