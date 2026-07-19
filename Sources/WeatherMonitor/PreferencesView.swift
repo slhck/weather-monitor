@@ -29,6 +29,8 @@ struct PreferencesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Toggle("Use temperature-based chart colors", isOn: $settings.colorfulCharts)
         }
         .formStyle(.grouped)
         .frame(width: 440)

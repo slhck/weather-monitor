@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let settings = AppSettings()
     private lazy var history = HistoryStore(geosphere: geosphere, openMeteo: openMeteo)
+    private lazy var forecast = ForecastStore(
+        geosphere: geosphere, openMeteo: openMeteo, range: settings.forecastRange
+    )
     private let stationStore = StationStore()
     private var cancellables = Set<AnyCancellable>()
 
@@ -21,17 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state = DisplayState()
 
     private var prefsWindow: NSWindow?
+    private var weatherWindow: NSWindow?
+    private var weatherHostingController: NSHostingController<WeatherWindowView>?
 
     /// If the nearest Austrian station is farther than this, the user is most
     /// likely outside Austria, so we use the Open-Meteo fallback instead.
     private let maxStationDistance = 150_000.0 // meters
-
-    private let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter
-    }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -44,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         render()
+        openWeatherWindow()
 
         // Load the station list in the background for the preferences picker.
         Task {
@@ -61,6 +60,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$stationOverrideID
             .dropFirst()
             .sink { [weak self] _ in Task { await self?.refresh() } }
+            .store(in: &cancellables)
+
+        settings.$forecastRange
+            .dropFirst()
+            .sink { [weak self] range in self?.forecast.range = range }
             .store(in: &cancellables)
 
         scheduleTimer()
@@ -98,6 +102,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefsWindow?.makeKeyAndOrderFront(nil)
     }
 
+    @objc private func openWeatherWindow() {
+        if weatherWindow == nil {
+            let hosting = NSHostingController(rootView: weatherWindowView())
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "Weather Monitor"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 740, height: 520))
+            window.minSize = NSSize(width: 720, height: 420)
+            window.isReleasedWhenClosed = false
+            window.center()
+            weatherHostingController = hosting
+            weatherWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        weatherWindow?.makeKeyAndOrderFront(nil)
+    }
+
     @objc private func quitClicked() {
         NSApp.terminate(nil)
     }
@@ -120,6 +141,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 newState.windSpeed = reading.windSpeed
                 newState.dewPoint = reading.dewPoint
                 newState.stationName = reading.stationName
+                newState.latitude = reading.latitude
+                newState.longitude = reading.longitude
                 newState.observationTime = reading.observationTime
                 newState.source = "Geosphere Austria"
                 newState.historySource = .geosphere(stationID: reading.stationID, stationName: reading.stationName)
@@ -190,6 +213,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state = newState
         // Drop cached history so the chart refetches a current window next time.
         history.invalidate()
+        forecast.invalidate()
+        // The window first appears before the asynchronous location/weather
+        // refresh finishes. Updating an NSHostingController's root view does not
+        // call onAppear again, so activate the stores explicitly for the new state.
+        history.activate(source: newState.historySource)
+        forecast.activate(latitude: newState.latitude, longitude: newState.longitude)
+        weatherHostingController?.rootView = weatherWindowView()
         render()
     }
 
@@ -223,71 +253,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return state.error ?? "Weather Monitor"
     }
 
-    /// A combined "Humidity … · Dew point …" line, or just whichever part is
-    /// available, or nil when neither is reported.
-    private func humidityDewPointLine() -> String? {
-        var parts: [String] = []
-        if let humidity = state.humidity {
-            parts.append(String(format: "Humidity %.0f%%", humidity))
-        }
-        if let dewPoint = state.dewPoint {
-            parts.append(String(format: "Dew point %.1f °C", dewPoint))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
         menu.delegate = self
 
         menu.addItem(chartItem())
         menu.addItem(.separator())
-
-        if let error = state.error, state.temperature == nil {
-            menu.addItem(infoItem("⚠ \(error)"))
-        }
-
-        if let temperature = state.temperature {
-            menu.addItem(infoItem(String(format: "%.1f °C", temperature)))
-
-            if let apparent = state.apparentTemperature {
-                menu.addItem(infoItem(String(format: "Feels like %.1f °C · %@", apparent, comfortLabel(apparent: apparent))))
-            }
-
-            if let humidityDewPoint = humidityDewPointLine() {
-                menu.addItem(infoItem(humidityDewPoint))
-            }
-            if let wind = state.windSpeed {
-                menu.addItem(infoItem(String(format: "Wind %.1f m/s", wind)))
-            }
-
-            if let name = state.stationName {
-                var line = name.capitalized
-                if let distance = state.distanceMeters {
-                    line += String(format: " · %.1f km", distance / 1000)
-                }
-                menu.addItem(infoItem(line))
-            } else {
-                menu.addItem(infoItem("Forecast point"))
-            }
-
-            if let observed = state.observationTime {
-                menu.addItem(infoItem("Updated \(timeFormatter.string(from: observed))"))
-            }
-            if let source = state.source {
-                menu.addItem(infoItem("Source: \(source)"))
-            }
-        }
-
-        if let latitude = state.latitude, let longitude = state.longitude {
-            let suffix = state.locationSource.map { " (\($0))" } ?? ""
-            menu.addItem(infoItem(String(format: "Location: %.3f, %.3f%@", latitude, longitude, suffix)))
-        } else if let locationSource = state.locationSource {
-            menu.addItem(infoItem(locationSource))
-        }
-
+        menu.addItem(conditionsItem())
+        menu.addItem(.separator())
+        menu.addItem(forecastRangeItem())
+        menu.addItem(temperatureForecastItem())
+        menu.addItem(precipitationForecastItem())
         menu.addItem(.separator())
 
+        menu.addItem(actionItem("Open Weather Window", #selector(openWeatherWindow), key: "o"))
         menu.addItem(actionItem("Preferences…", #selector(openPreferences), key: ","))
         menu.addItem(actionItem("Refresh Now", #selector(refreshClicked), key: "r"))
 
@@ -301,7 +280,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A menu item whose content is the compact SwiftUI temperature chart,
     /// pointed at whatever station or location the current reading came from.
     private func chartItem() -> NSMenuItem {
-        let view = MenuHistoryView(store: history, source: state.historySource)
+        let view = MenuHistoryView(store: history, settings: settings, source: state.historySource)
+        return viewItem(view)
+    }
+
+    private func conditionsItem() -> NSMenuItem {
+        viewItem(ConditionsView(state: state))
+    }
+
+    private func temperatureForecastItem() -> NSMenuItem {
+        let view = TemperatureForecastView(
+            store: forecast, settings: settings,
+            latitude: state.latitude, longitude: state.longitude
+        )
+        return viewItem(view)
+    }
+
+    private func forecastRangeItem() -> NSMenuItem {
+        let view = HStack(spacing: 8) {
+            Text("Forecast")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            ForecastRangePicker(settings: settings)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .frame(width: 340)
+        return viewItem(view)
+    }
+
+    private func precipitationForecastItem() -> NSMenuItem {
+        let view = PrecipitationForecastView(
+            store: forecast, latitude: state.latitude, longitude: state.longitude
+        )
+        return viewItem(view)
+    }
+
+    private func viewItem<ViewType: View>(_ view: ViewType) -> NSMenuItem {
         let hosting = NSHostingView(rootView: view)
         hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
         let item = NSMenuItem()
@@ -309,16 +324,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    private func infoItem(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        return item
+    private func weatherWindowView() -> WeatherWindowView {
+        WeatherWindowView(
+            state: state,
+            history: history,
+            forecast: forecast,
+            settings: settings,
+            refresh: { [weak self] in Task { await self?.refresh() } },
+            openPreferences: { [weak self] in self?.openPreferences() }
+        )
     }
 
     private func actionItem(_ title: String, _ action: Selector, key: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.target = self
         return item
+    }
+}
+
+extension AppDelegate {
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication, hasVisibleWindows flag: Bool
+    ) -> Bool {
+        openWeatherWindow()
+        return false
     }
 }
 
@@ -331,6 +360,7 @@ extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         menuIsOpen = true
         history.forceReload(source: state.historySource)
+        forecast.forceReload(latitude: state.latitude, longitude: state.longitude)
         Task { await refresh() }
     }
 

@@ -6,6 +6,7 @@ import Charts
 struct TemperatureChart: View {
     let samples: [Sample]
     let range: HistoryRange
+    let colorful: Bool
 
     @State private var selected: Sample?
 
@@ -36,7 +37,7 @@ struct TemperatureChart: View {
                     x: .value("Time", selected.date),
                     y: .value("°C", selected.temperature)
                 )
-                .foregroundStyle(TemperatureColor.color(for: selected.temperature))
+                .foregroundStyle(colorful ? TemperatureColor.color(for: selected.temperature) : Color.orange)
                 .symbolSize(50)
             }
         }
@@ -130,12 +131,23 @@ struct TemperatureChart: View {
     /// matches its temperature, since the gradient runs top-to-bottom over the
     /// same range the y-axis uses.
     private var lineGradient: LinearGradient {
-        TemperatureColor.gradient(min: domain.lowerBound, max: domain.upperBound)
+        colorful
+            ? TemperatureColor.gradient(min: domain.lowerBound, max: domain.upperBound)
+            : warmGradient
     }
 
     /// The same colour scale as the line, faded back for the fill underneath.
     private var areaGradient: LinearGradient {
-        TemperatureColor.gradient(min: domain.lowerBound, max: domain.upperBound, opacity: 0.25)
+        colorful
+            ? TemperatureColor.gradient(min: domain.lowerBound, max: domain.upperBound, opacity: 0.25)
+            : LinearGradient(
+                colors: [Color.yellow.opacity(0.24), Color.orange.opacity(0.12)],
+                startPoint: .top, endPoint: .bottom
+            )
+    }
+
+    private var warmGradient: LinearGradient {
+        LinearGradient(colors: [.yellow, .orange], startPoint: .top, endPoint: .bottom)
     }
 
     /// Axis tick labels: clock time for intraday ranges, dates for longer ones.
@@ -211,6 +223,7 @@ enum TemperatureColor {
 /// with buttons to switch the time window.
 struct MenuHistoryView: View {
     @ObservedObject var store: HistoryStore
+    @ObservedObject var settings: AppSettings
     let source: HistorySource?
 
     var body: some View {
@@ -256,7 +269,7 @@ struct MenuHistoryView: View {
                         .foregroundStyle(.secondary)
                 )
         } else {
-            TemperatureChart(samples: store.samples, range: store.range)
+            TemperatureChart(samples: store.samples, range: store.range, colorful: settings.colorfulCharts)
         }
     }
 

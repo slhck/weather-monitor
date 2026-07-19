@@ -1,6 +1,6 @@
 # Weather Monitor
 
-A tiny macOS menu bar app that shows the current local outdoor temperature. It finds the weather station nearest to your location using the Geosphere Austria Data Hub and falls back to Open-Meteo when no Austrian station is close enough.
+A small macOS app that shows the current local outdoor temperature in the Dock and menu bar. It finds the weather station nearest to your location using the Geosphere Austria Data Hub and falls back to Open-Meteo when no Austrian station is close enough.
 
 ![It's too effing hot.](screenshot.png)
 
@@ -14,20 +14,27 @@ The app determines your location, then fetches the temperature in this order:
 - It downloads the Geosphere Austria station list (TAWES 10-minute network), picks the nearest active stations, and reads the current air temperature (`TL`) from the closest one that is reporting.
 - If the nearest Austrian station is more than 150 km away (so you are probably outside Austria) or Geosphere is unreachable, it uses the free, key-less Open-Meteo API for the temperature at your coordinates.
 
-The temperature appears in the menu bar. Click it to see the history chart, the station name and distance, when the reading was taken, the data source, and your location, and to open preferences or trigger a manual refresh.
+The app opens a weather window with current conditions, history, and forecast charts. Closing the window leaves the app running. Click its Dock icon to reopen it. The temperature also appears in the menu bar when macOS has room for the status item.
 
 ## Preferences
 
-Open Preferences from the menu bar to configure:
+Open Preferences from the weather window or menu bar to configure:
 
 - Refresh frequency (5, 10, 15, 30, or 60 minutes).
 - Location: either automatic (your location) or a specific weather station picked from a dropdown of all Geosphere stations. Choosing a station skips location detection and reads that station directly.
+- Temperature-based chart colors. This is off by default; charts use the macOS accent color unless enabled.
 
 ## History chart
 
 The menu shows a temperature curve right at the top, drawn with Swift Charts. The data is pulled live from the same APIs rather than accumulated locally: for a Geosphere station it reads the 10-minute historical series (`station/historical/tawes-v1-10min`), and for an Open-Meteo location it reads the hourly series. Buttons below the chart switch the window between 12 hours, 24 hours, 3 days, 7 days, and 14 days, and hovering (or click-dragging) across the chart shows the temperature and time at that point.
 
 Each lookup is cached in memory, so switching ranges — or returning to a station you have already viewed — is instant. Nothing is written to disk; the chart refetches a current window after each refresh.
+
+## Forecast charts
+
+Two panels below the current conditions show hourly temperature and precipitation forecasts. One shared control above the panels selects a 12-, 24-, or 48-hour window. The temperature chart shows the expected minimum and maximum, while the precipitation chart shows hourly amounts and the total for the window.
+
+The app first requests GeoSphere Austria's hourly numerical weather prediction data (`timeseries/forecast/nwp-v1-1h-2500m`). GeoSphere provides 2 m temperature (`t2m`) and accumulated precipitation (`rr_acc`); the app converts the accumulated values into hourly amounts. It falls back to Open-Meteo when the location is outside the GeoSphere model grid or that forecast is unavailable.
 
 ## Requirements
 
@@ -50,9 +57,10 @@ To start the app automatically, move `WeatherMonitor.app` to `/Applications` and
 
 ## Notes
 
-- The app has no Dock icon or main window — it lives entirely in the menu bar (`LSUIElement`).
+- The app stays in the Dock so it remains accessible when a MacBook notch or crowded menu bar hides its status item.
 - No API keys are required. Both Geosphere Austria and Open-Meteo are open APIs.
 - Geosphere API docs: https://dataset.api.hub.geosphere.at/v1/docs/
+- Geosphere's forecast endpoints are marked as prerelease and may change without backward compatibility.
 
 ## License
 

@@ -62,6 +62,29 @@ enum HistoryRange: String, CaseIterable, Identifiable {
     }
 }
 
+/// A selectable future window shared by the temperature and precipitation charts.
+enum ForecastRange: String, CaseIterable, Identifiable {
+    case h12, h24, h48
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .h12: return "12h"
+        case .h24: return "24h"
+        case .h48: return "48h"
+        }
+    }
+
+    var duration: TimeInterval {
+        switch self {
+        case .h12: return 12 * 3_600
+        case .h24: return 24 * 3_600
+        case .h48: return 48 * 3_600
+        }
+    }
+}
+
 /// A weather station from the Geosphere metadata, used for the picker and lookups.
 struct StationInfo: Identifiable, Sendable, Hashable {
     let id: String
@@ -81,6 +104,8 @@ struct StationReading: Sendable {
     let stationID: String
     let stationName: String
     let stationDistance: Double // meters from the user
+    let latitude: Double
+    let longitude: Double
     let observationTime: Date?
 }
 

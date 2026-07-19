@@ -7,8 +7,9 @@ struct WeatherMonitorApp {
         let delegate = AppDelegate()
         let app = NSApplication.shared
         app.delegate = delegate
-        // .accessory => no Dock icon, no main menu; the app lives only in the menu bar.
-        app.setActivationPolicy(.accessory)
+        // A regular app remains reachable from the Dock when the menu bar icon
+        // is hidden by a MacBook notch or crowded status items.
+        app.setActivationPolicy(.regular)
         app.run()
     }
 }

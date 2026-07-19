@@ -52,6 +52,35 @@ struct OpenMeteoClient {
         return samples
     }
 
+    /// Forecast fallback for coordinates outside GeoSphere's NWP grid.
+    func forecast(latitude: Double, longitude: Double, end: Date) async throws -> [ForecastPoint] {
+        var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
+        components.queryItems = [
+            URLQueryItem(name: "latitude", value: String(latitude)),
+            URLQueryItem(name: "longitude", value: String(longitude)),
+            URLQueryItem(name: "hourly", value: "temperature_2m,precipitation"),
+            URLQueryItem(name: "forecast_days", value: "3"),
+            URLQueryItem(name: "timezone", value: "UTC")
+        ]
+
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        let response = try JSONDecoder().decode(ForecastResponse.self, from: data)
+        let now = Date()
+        var points: [ForecastPoint] = []
+        for (index, timestamp) in response.hourly.time.enumerated() {
+            guard index < response.hourly.temperature_2m.count,
+                  index < response.hourly.precipitation.count,
+                  let date = utcHourFormatter.date(from: timestamp),
+                  date >= now, date <= end else { continue }
+            points.append(ForecastPoint(
+                date: date,
+                temperature: response.hourly.temperature_2m[index],
+                precipitation: response.hourly.precipitation[index]
+            ))
+        }
+        return points
+    }
+
     /// Open-Meteo returns naive timestamps (e.g. "2026-06-15T00:00"); with
     /// `timezone=UTC` they are UTC, so parse them as such.
     private let utcHourFormatter: DateFormatter = {
@@ -80,6 +109,16 @@ struct OpenMeteoClient {
         struct Hourly: Decodable {
             let time: [String]
             let temperature_2m: [Double]
+        }
+    }
+
+    private struct ForecastResponse: Decodable {
+        let hourly: Hourly
+
+        struct Hourly: Decodable {
+            let time: [String]
+            let temperature_2m: [Double]
+            let precipitation: [Double]
         }
     }
 }

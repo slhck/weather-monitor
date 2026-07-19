@@ -5,6 +5,7 @@ import Foundation
 actor GeosphereClient {
     private let base = "https://dataset.api.hub.geosphere.at/v1/station/current/tawes-v1-10min"
     private let historicalBase = "https://dataset.api.hub.geosphere.at/v1/station/historical/tawes-v1-10min"
+    private let forecastBase = "https://dataset.api.hub.geosphere.at/v1/timeseries/forecast/nwp-v1-1h-2500m"
     private var stationsCache: [StationInfo]?
 
     private let isoFormatter: ISO8601DateFormatter = {
@@ -47,6 +48,8 @@ actor GeosphereClient {
                     stationID: candidate.station.id,
                     stationName: candidate.station.name,
                     stationDistance: candidate.distance,
+                    latitude: candidate.station.latitude,
+                    longitude: candidate.station.longitude,
                     observationTime: observations.observationTime
                 )
             }
@@ -58,7 +61,8 @@ actor GeosphereClient {
     /// Reads the current conditions for one specific station (override mode).
     func temperature(forStationID id: String) async throws -> StationReading {
         let stations = try await loadStations()
-        let name = stations.first(where: { $0.id == id })?.name ?? id
+        let station = stations.first(where: { $0.id == id })
+        let name = station?.name ?? id
         let observations = try await observations(forStationIDs: id)
         guard let values = observations.byStation[id] else { throw WeatherError.noData }
         return StationReading(
@@ -69,6 +73,8 @@ actor GeosphereClient {
             stationID: id,
             stationName: name,
             stationDistance: 0,
+            latitude: station?.latitude ?? 0,
+            longitude: station?.longitude ?? 0,
             observationTime: observations.observationTime
         )
     }
@@ -97,6 +103,39 @@ actor GeosphereClient {
             samples.append(Sample(date: date, temperature: value))
         }
         return samples
+    }
+
+    /// Reads the latest hourly numerical forecast at the nearest 2.5 km grid
+    /// point. Precipitation is converted from the API's accumulated total into
+    /// an amount for each hourly interval.
+    func forecast(latitude: Double, longitude: Double, end: Date) async throws -> [ForecastPoint] {
+        var components = URLComponents(string: forecastBase)!
+        components.queryItems = [
+            URLQueryItem(name: "parameters", value: "t2m,rr_acc"),
+            URLQueryItem(name: "lat_lon", value: "\(latitude),\(longitude)"),
+            URLQueryItem(name: "end", value: isoFormatter.string(from: end))
+        ]
+
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        let response = try JSONDecoder().decode(ForecastResponse.self, from: data)
+        guard let parameters = response.features.first?.properties.parameters,
+              let temperatures = parameters["t2m"]?.data,
+              let accumulated = parameters["rr_acc"]?.data else {
+            throw WeatherError.noData
+        }
+
+        var points: [ForecastPoint] = []
+        var previousPrecipitation: Double?
+        for (index, timestamp) in response.timestamps.enumerated() {
+            guard index < temperatures.count, index < accumulated.count,
+                  let temperature = temperatures[index],
+                  let total = accumulated[index],
+                  let date = parseTimestamp(timestamp) else { continue }
+            let precipitation = previousPrecipitation.map { max(0, total - $0) } ?? 0
+            previousPrecipitation = total
+            points.append(ForecastPoint(date: date, temperature: temperature, precipitation: precipitation))
+        }
+        return points
     }
 
     // MARK: - Helpers
@@ -191,6 +230,23 @@ private struct CurrentResponse: Decodable {
     struct Properties: Decodable {
         let parameters: [String: Parameter]
         let station: String
+    }
+
+    struct Parameter: Decodable {
+        let data: [Double?]
+    }
+}
+
+private struct ForecastResponse: Decodable {
+    let timestamps: [String]
+    let features: [Feature]
+
+    struct Feature: Decodable {
+        let properties: Properties
+    }
+
+    struct Properties: Decodable {
+        let parameters: [String: Parameter]
     }
 
     struct Parameter: Decodable {
